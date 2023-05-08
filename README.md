@@ -1,3 +1,3 @@
-# Rtf-GPGPU
+# Rtf-GPGPU-Particles
 
-A very basic setup for creating GPGPU effects using Three.js and React Three Fiber.
+A couple of experiments with gpgpu particles in React Three Fiber and threejs
