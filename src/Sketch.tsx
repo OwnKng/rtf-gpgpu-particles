@@ -1,12 +1,12 @@
-import { useMemo, useRef } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
 import simulatiomnFragment from "./shaders/simulation/fragment.glsl"
-import fragment from "./shaders/particles/fragment.glsl"
 import vertex from "./shaders/particles/vertex.glsl"
 
-const WIDTH = 512
+const WIDTH = 128
+const BOUNDS = 512
 
 const tempVector = new THREE.Vector3()
 
@@ -45,17 +45,32 @@ const getRandomPoints = (count: number, size: number) => {
   return data
 }
 
-const Sketch = () => {
-  const materialRef = useRef<THREE.ShaderMaterial>(null!)
-  const { gl } = useThree()
+const material = new THREE.ShaderMaterial({
+  uniforms: THREE.UniformsUtils.merge([
+    THREE.ShaderLib["phong"].uniforms,
+    { uTime: { value: 0.0 }, positionTexture: { value: null } },
+  ]),
+  vertexShader: vertex,
+  fragmentShader: THREE.ShaderChunk["meshphong_frag"],
+})
 
-  const uniforms = useMemo(
-    () => ({
-      uTime: { value: 0.0 },
-      positionTexture: { value: null },
-    }),
-    []
-  )
+material.lights = true
+
+material.color = new THREE.Color(0x0040c0)
+material.specular = new THREE.Color(0x111111)
+material.shininess = 50
+
+// Sets the uniforms with the material values
+material.uniforms["diffuse"].value = material.color
+material.uniforms["specular"].value = material.specular
+material.uniforms["shininess"].value = Math.max(material.shininess, 1e-4)
+material.uniforms["opacity"].value = material.opacity
+
+material.defines.WIDTH = WIDTH.toFixed(1)
+material.defines.BOUNDS = BOUNDS.toFixed(1)
+
+const Sketch = () => {
+  const { gl } = useThree()
 
   //_ Create the fbo and simulation data
   const [gpuCompute, positionTexture] = useMemo(() => {
@@ -63,7 +78,7 @@ const Sketch = () => {
     const dataTexture = gpuRender.createTexture()
 
     // A data texture of random points - generates a cube shape
-    const dataA = getRandomPoints(WIDTH * WIDTH * 4, 1)
+    const dataA = getRandomPoints(WIDTH * WIDTH * 4, 10)
     const dataTextureA = new THREE.DataTexture(
       dataA,
       WIDTH,
@@ -74,7 +89,7 @@ const Sketch = () => {
     dataTextureA.needsUpdate = true
 
     // A data texture of points arranged in a sphere shape
-    const dataB = getSphere(WIDTH * WIDTH * 4, 1)
+    const dataB = getSphere(WIDTH * WIDTH * 4, 10)
     const dataTextureB = new THREE.DataTexture(
       dataB,
       WIDTH,
@@ -120,42 +135,38 @@ const Sketch = () => {
 
   useFrame(({ clock }) => {
     gpuCompute.compute()
-
     positionTexture.material.uniforms.uTime.value = clock.getElapsedTime()
 
-    materialRef.current.uniforms.positionTexture.value =
+    material.uniforms.positionTexture.value =
       gpuCompute.getCurrentRenderTarget(positionTexture).texture
 
-    materialRef.current.uniforms.uTime.value = clock.getElapsedTime()
+    material.uniforms.uTime.value = clock.getElapsedTime()
 
-    materialRef.current.uniformsNeedUpdate = true
+    material.uniformsNeedUpdate = true
   })
 
   return (
-    <points>
-      <bufferGeometry attach='geometry'>
-        <bufferAttribute
-          attach='attributes-position'
+    <instancedMesh
+      args={[undefined, undefined, WIDTH * WIDTH]}
+      castShadow
+      receiveShadow
+      material={material}
+    >
+      <boxGeometry args={[0.1, 0.5, 0.1]}>
+        <instancedBufferAttribute
+          attach='attributes-offset'
           array={positions}
           count={positions.length / 3}
           itemSize={3}
         />
-        <bufferAttribute
+        <instancedBufferAttribute
           attach='attributes-pIndex'
           array={pIndex}
           count={pIndex.length / 2}
           itemSize={2}
         />
-      </bufferGeometry>
-      <shaderMaterial
-        ref={materialRef}
-        uniforms={uniforms}
-        vertexShader={vertex}
-        fragmentShader={fragment}
-        blending={THREE.AdditiveBlending}
-        transparent
-      />
-    </points>
+      </boxGeometry>
+    </instancedMesh>
   )
 }
 
