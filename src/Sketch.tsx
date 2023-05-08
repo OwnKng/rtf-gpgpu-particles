@@ -1,14 +1,27 @@
-import { useLayoutEffect, useMemo, useRef } from "react"
+import { useMemo, useRef } from "react"
 import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
-import simulatiomnFragment from "./shaders/simulation/fragment.glsl"
+
+import position from "./shaders/simulation/position.glsl"
+import velocity from "./shaders/simulation/velocity.glsl"
+
+import fragment from "./shaders/particles/fragment.glsl"
 import vertex from "./shaders/particles/vertex.glsl"
 
-const WIDTH = 128
-const BOUNDS = 512
+const WIDTH = 800
+const BOUNDS = 16
 
-const tempVector = new THREE.Vector3()
+const fillDataTexture = (texture: THREE.DataTexture) => {
+  const data = texture.image.data
+
+  for (let i = 0; i < data.length; i += 4) {
+    data[i + 0] = 0
+    data[i + 1] = 0
+    data[i + 2] = 0
+    data[i + 3] = 1
+  }
+}
 
 const getPoint = (v: THREE.Vector3, size: number): THREE.Vector3 => {
   v.x = Math.random() * 2 - 1
@@ -19,6 +32,7 @@ const getPoint = (v: THREE.Vector3, size: number): THREE.Vector3 => {
 }
 
 const getSphere = (count: number, size: number) => {
+  const tempVector = new THREE.Vector3()
   const len = count * 3
   const data = new Float32Array(len)
   const p = tempVector.clone()
@@ -32,53 +46,26 @@ const getSphere = (count: number, size: number) => {
   return data
 }
 
-const getRandomPoints = (count: number, size: number) => {
-  const len = count * 3
-  const data = new Float32Array(len)
-
-  for (let i = 0; i < len; i += 4) {
-    data[i] = Math.random() * size - size / 2
-    data[i + 1] = Math.random() * size - size / 2
-    data[i + 2] = Math.random() * size - size / 2
-    data[i + 3] = 1
-  }
-  return data
-}
-
-const material = new THREE.ShaderMaterial({
-  uniforms: THREE.UniformsUtils.merge([
-    THREE.ShaderLib["phong"].uniforms,
-    { uTime: { value: 0.0 }, positionTexture: { value: null } },
-  ]),
-  vertexShader: vertex,
-  fragmentShader: THREE.ShaderChunk["meshphong_frag"],
-})
-
-material.lights = true
-
-material.color = new THREE.Color(0x0040c0)
-material.specular = new THREE.Color(0x111111)
-material.shininess = 50
-
-// Sets the uniforms with the material values
-material.uniforms["diffuse"].value = material.color
-material.uniforms["specular"].value = material.specular
-material.uniforms["shininess"].value = Math.max(material.shininess, 1e-4)
-material.uniforms["opacity"].value = material.opacity
-
-material.defines.WIDTH = WIDTH.toFixed(1)
-material.defines.BOUNDS = BOUNDS.toFixed(1)
-
 const Sketch = () => {
+  const materialRef = useRef<THREE.ShaderMaterial>(null!)
   const { gl } = useThree()
 
-  //_ Create the fbo and simulation data
-  const [gpuCompute, positionTexture] = useMemo(() => {
-    const gpuRender = new GPUComputationRenderer(WIDTH, WIDTH, gl)
-    const dataTexture = gpuRender.createTexture()
+  const cursor = useRef(new THREE.Vector3(0, 0, 0))
 
-    // A data texture of random points - generates a cube shape
-    const dataA = getRandomPoints(WIDTH * WIDTH * 4, 10)
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0.0 },
+      positionTexture: { value: null },
+      velocityTexture: { value: null },
+    }),
+    []
+  )
+
+  //_ Create the fbo and simulation data
+  const [gpuCompute, positionTexture, velocityTexture] = useMemo(() => {
+    const gpuRender = new GPUComputationRenderer(WIDTH, WIDTH, gl)
+
+    const dataA = getSphere(WIDTH * WIDTH * 4, BOUNDS)
     const dataTextureA = new THREE.DataTexture(
       dataA,
       WIDTH,
@@ -88,33 +75,52 @@ const Sketch = () => {
     )
     dataTextureA.needsUpdate = true
 
-    // A data texture of points arranged in a sphere shape
-    const dataB = getSphere(WIDTH * WIDTH * 4, 10)
-    const dataTextureB = new THREE.DataTexture(
-      dataB,
-      WIDTH,
-      WIDTH,
-      THREE.RGBAFormat,
-      THREE.FloatType
-    )
-    dataTextureB.needsUpdate = true
+    const dataTexturePosition = gpuRender.createTexture()
+    fillDataTexture(dataTexturePosition)
 
-    // positionTexture is the data texture that will be updated each frame
+    const dataTextureVelocity = gpuRender.createTexture()
+    fillDataTexture(dataTextureVelocity)
+
     const positionTexture = gpuRender.addVariable(
-      "positionTexture",
-      simulatiomnFragment,
-      dataTexture
+      "texturePosition",
+      position,
+      dataTexturePosition
     )
+    const velocityTexture = gpuRender.addVariable(
+      "textureVelocity",
+      velocity,
+      dataTextureVelocity
+    )
+
+    gpuRender.setVariableDependencies(positionTexture, [
+      positionTexture,
+      velocityTexture,
+    ])
+
+    gpuRender.setVariableDependencies(velocityTexture, [
+      velocityTexture,
+      positionTexture,
+    ])
 
     positionTexture.material.uniforms.uTime = { value: 0.0 }
-    positionTexture.material.uniforms.textureA = { value: dataTextureA }
-    positionTexture.material.uniforms.textureB = { value: dataTextureB }
+    velocityTexture.material.uniforms.uTime = { value: 0.0 }
+    positionTexture.material.uniforms.delta = { value: 0.0 }
+    velocityTexture.material.uniforms.delta = { value: 0.0 }
+    velocityTexture.material.uniforms.originalPosition = { value: dataTextureA }
+
+    velocityTexture.material.uniforms.maxSpeed = { value: 1 }
+    velocityTexture.material.uniforms.maxForce = { value: 0.1 }
+
+    velocityTexture.material.uniforms.uMouse = { value: cursor.current }
+
     positionTexture.wrapS = THREE.RepeatWrapping
     positionTexture.wrapT = THREE.RepeatWrapping
+    velocityTexture.wrapS = THREE.RepeatWrapping
+    velocityTexture.wrapT = THREE.RepeatWrapping
 
     gpuRender.init()
 
-    return [gpuRender, positionTexture]
+    return [gpuRender, positionTexture, velocityTexture]
   }, [gl])
 
   // Buffer attributes for the presentational layer
@@ -133,40 +139,66 @@ const Sketch = () => {
     []
   )
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     gpuCompute.compute()
-    positionTexture.material.uniforms.uTime.value = clock.getElapsedTime()
 
-    material.uniforms.positionTexture.value =
+    positionTexture.material.uniforms.uTime.value = clock.getElapsedTime()
+    velocityTexture.material.uniforms.uTime.value = clock.getElapsedTime()
+
+    positionTexture.material.uniforms.delta.value = delta
+    velocityTexture.material.uniforms.delta.value = delta
+
+    materialRef.current.uniforms.positionTexture.value =
       gpuCompute.getCurrentRenderTarget(positionTexture).texture
 
-    material.uniforms.uTime.value = clock.getElapsedTime()
+    materialRef.current.uniforms.velocityTexture.value =
+      gpuCompute.getCurrentRenderTarget(velocityTexture).texture
 
-    material.uniformsNeedUpdate = true
+    materialRef.current.uniforms.uTime.value = clock.getElapsedTime()
+
+    materialRef.current.uniformsNeedUpdate = true
   })
 
   return (
-    <instancedMesh
-      args={[undefined, undefined, WIDTH * WIDTH]}
-      castShadow
-      receiveShadow
-      material={material}
-    >
-      <boxGeometry args={[0.1, 0.5, 0.1]}>
-        <instancedBufferAttribute
-          attach='attributes-offset'
-          array={positions}
-          count={positions.length / 3}
-          itemSize={3}
+    <>
+      <mesh
+        onPointerMove={(e) =>
+          (velocityTexture.material.uniforms.uMouse.value = e.point)
+        }
+      >
+        <icosahedronGeometry args={[BOUNDS, 1]} />
+        <meshBasicMaterial
+          side={THREE.DoubleSide}
+          transparent={true}
+          opacity={0}
         />
-        <instancedBufferAttribute
-          attach='attributes-pIndex'
-          array={pIndex}
-          count={pIndex.length / 2}
-          itemSize={2}
+      </mesh>
+      <points>
+        <bufferGeometry attach='geometry'>
+          <bufferAttribute
+            attach='attributes-position'
+            array={positions}
+            count={positions.length / 3}
+            itemSize={3}
+          />
+          <bufferAttribute
+            attach='attributes-pIndex'
+            array={pIndex}
+            count={pIndex.length / 2}
+            itemSize={2}
+          />
+        </bufferGeometry>
+        <shaderMaterial
+          ref={materialRef}
+          uniforms={uniforms}
+          vertexShader={vertex}
+          fragmentShader={fragment}
+          blending={THREE.AdditiveBlending}
+          transparent
+          side={THREE.DoubleSide}
         />
-      </boxGeometry>
-    </instancedMesh>
+      </points>
+    </>
   )
 }
 

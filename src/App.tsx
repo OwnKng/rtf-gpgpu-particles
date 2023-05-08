@@ -6,10 +6,8 @@ import { OrbitControls } from "@react-three/drei"
 function App() {
   return (
     <div className='App'>
-      <Canvas shadows>
+      <Canvas camera={{ position: [0, 0, 40] }}>
         <OrbitControls />
-        <ambientLight intensity={0.2} />
-        <pointLight castShadow position={[0, 10, 0]} />
         <Sketch />
       </Canvas>
     </div>
