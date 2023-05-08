@@ -2,60 +2,15 @@ import { useMemo, useRef } from "react"
 import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
-import { fragment } from "./shaders/fragment"
+import simulatiomnFragment from "./shaders/simulation/fragment.glsl"
+import fragment from "./shaders/particles/fragment.glsl"
+import vertex from "./shaders/particles/vertex.glsl"
 
-const WIDTH = 32
+const WIDTH = 512
 
-const particleVertex = `
-    uniform float time;
-    uniform sampler2D positionTexture;
- 
-    varying vec3 vPosition;
-    varying vec2 vuv;
+const tempVector = new THREE.Vector3()
 
-
-    attribute vec2 pIndex;
-
-    void main() {
-    
-
-        vec3 pos = texture2D(positionTexture, pIndex).xyz;
-
-        vuv = pIndex;
-
-        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-        gl_PointSize = 30.0 * (1.0 / - mvPosition.z);
-
-        gl_Position = projectionMatrix * mvPosition;
-    }
-`
-
-const particleFragment = `
-    varying vec2 vuv;
-
-    void main() {
-        gl_FragColor = vec4(vec3(vuv, 1.0), 1.0);
-    }
-`
-
-const fillTexture = (texture: THREE.DataTexture) => {
-  const dataArray = texture.image.data
-
-  for (let k = 0, kl = dataArray.length; k < kl; k += 4) {
-    const x = Math.random()
-    const y = Math.random()
-    const z = Math.random()
-
-    dataArray[k + 0] = x
-    dataArray[k + 1] = y
-    dataArray[k + 2] = z
-    dataArray[k + 3] = 1
-  }
-
-  return dataArray
-}
-
-function getPoint(v, size) {
+const getPoint = (v: THREE.Vector3, size: number): THREE.Vector3 => {
   v.x = Math.random() * 2 - 1
   v.y = Math.random() * 2 - 1
   v.z = Math.random() * 2 - 1
@@ -63,10 +18,10 @@ function getPoint(v, size) {
   return v.normalize().multiplyScalar(size)
 }
 
-function getSphere(count, size) {
+const getSphere = (count: number, size: number) => {
   const len = count * 3
   const data = new Float32Array(len)
-  const p = new THREE.Vector3()
+  const p = tempVector.clone()
   for (let i = 0; i < len; i += 4) {
     getPoint(p, size)
     data[i] = p.x
@@ -77,7 +32,7 @@ function getSphere(count, size) {
   return data
 }
 
-const getRandomPoints = (count, size) => {
+const getRandomPoints = (count: number, size: number) => {
   const len = count * 3
   const data = new Float32Array(len)
 
@@ -91,7 +46,7 @@ const getRandomPoints = (count, size) => {
 }
 
 const Sketch = () => {
-  const ref = useRef<THREE.ShaderMaterial>(null!)
+  const materialRef = useRef<THREE.ShaderMaterial>(null!)
   const { gl } = useThree()
 
   const uniforms = useMemo(
@@ -102,10 +57,12 @@ const Sketch = () => {
     []
   )
 
+  //_ Create the fbo and simulation data
   const [gpuCompute, positionTexture] = useMemo(() => {
     const gpuRender = new GPUComputationRenderer(WIDTH, WIDTH, gl)
     const dataTexture = gpuRender.createTexture()
 
+    // A data texture of random points - generates a cube shape
     const dataA = getRandomPoints(WIDTH * WIDTH * 4, 1)
     const dataTextureA = new THREE.DataTexture(
       dataA,
@@ -116,8 +73,8 @@ const Sketch = () => {
     )
     dataTextureA.needsUpdate = true
 
+    // A data texture of points arranged in a sphere shape
     const dataB = getSphere(WIDTH * WIDTH * 4, 1)
-
     const dataTextureB = new THREE.DataTexture(
       dataB,
       WIDTH,
@@ -127,13 +84,14 @@ const Sketch = () => {
     )
     dataTextureB.needsUpdate = true
 
+    // positionTexture is the data texture that will be updated each frame
     const positionTexture = gpuRender.addVariable(
       "positionTexture",
-      fragment,
+      simulatiomnFragment,
       dataTexture
     )
 
-    positionTexture.material.uniforms.time = { value: 0.0 }
+    positionTexture.material.uniforms.uTime = { value: 0.0 }
     positionTexture.material.uniforms.textureA = { value: dataTextureA }
     positionTexture.material.uniforms.textureB = { value: dataTextureB }
     positionTexture.wrapS = THREE.RepeatWrapping
@@ -144,11 +102,10 @@ const Sketch = () => {
     return [gpuRender, positionTexture]
   }, [gl])
 
+  // Buffer attributes for the presentational layer
   const [positions, pIndex] = useMemo(
     () => [
-      Float32Array.from(
-        new Array(WIDTH * WIDTH * 3).fill(0).map(() => Math.random())
-      ),
+      Float32Array.from(new Array(WIDTH * WIDTH * 3).fill(0)),
       Float32Array.from(
         new Array(WIDTH * WIDTH)
           .fill(0)
@@ -164,14 +121,14 @@ const Sketch = () => {
   useFrame(({ clock }) => {
     gpuCompute.compute()
 
-    positionTexture.material.uniforms.time.value = clock.getElapsedTime()
+    positionTexture.material.uniforms.uTime.value = clock.getElapsedTime()
 
-    ref.current.uniforms.positionTexture.value =
+    materialRef.current.uniforms.positionTexture.value =
       gpuCompute.getCurrentRenderTarget(positionTexture).texture
 
-    ref.current.uniforms.uTime.value = clock.getElapsedTime()
+    materialRef.current.uniforms.uTime.value = clock.getElapsedTime()
 
-    ref.current.uniformsNeedUpdate = true
+    materialRef.current.uniformsNeedUpdate = true
   })
 
   return (
@@ -191,10 +148,12 @@ const Sketch = () => {
         />
       </bufferGeometry>
       <shaderMaterial
-        ref={ref}
+        ref={materialRef}
         uniforms={uniforms}
-        vertexShader={particleVertex}
-        fragmentShader={particleFragment}
+        vertexShader={vertex}
+        fragmentShader={fragment}
+        blending={THREE.AdditiveBlending}
+        transparent
       />
     </points>
   )
